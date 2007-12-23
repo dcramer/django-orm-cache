@@ -90,6 +90,9 @@ class CachedModel(models.Model):
         super(CachedModel, self).save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
+        # TODO: create an option that tells the model whether or not it should
+        # do a cache.delete when the object is deleted. For memcached we
+        # wouldn't care about deleting.
         cache.delete(self._get_cache_key_for_pk(self.__class__, self.pk))
         super(CachedModel, self).delete(*args, **kwargs)
 
