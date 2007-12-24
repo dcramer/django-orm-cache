@@ -168,6 +168,43 @@ class CachedQuerySet(QuerySet):
             self._cache_keys[extra] = '%s%s%s' % (self.cache_key_prefix, str(hash(''.join(self._get_sorted_clause_key()))), extra)
         return self._cache_keys[extra]
 
+    def _prepare_queryset_for_cache(self, queryset):
+        """
+        This is where the magic happens. We need to first see if our result set
+        is in the cache. If it isn't, we need to do the query and set the cache
+        to (ModelClass, (*<pks>,), (*<select_related fields>,), <n keys>).
+        """
+        # TODO: make this handle non-explicit field recursion
+        # which btw should be removed from django, because .select_related()
+        # is the worst thing you can possibly do.. kind of like import *
+        
+        # TODO: make this split up large sets of data based on an option
+        # and sets the last param, keys, to how many datasets are stored
+        # in the cache to regenerate.
+        keys = tuple(obj.pk for obj in queryset)
+        fields = ()
+        if self._recurse_fields is not None:
+            if self._recurse_fields:
+                fields = self._recurse_fields
+        return (queryset.model, keys, fields, 1)
+
+    def _get_queryset_from_cache(self, cache_object):
+        """
+        We transform the cache storage into an actual QuerySet object
+        automagickly handling the keys depth and select_related fields (again,
+        using the recursive methods of CachedQuerySet.
+        
+        We effectively would just be doing a cache.multi_get(*pks), grabbing
+        the pks for each releation, e.g. user, and then doing a
+        CachedManager.objects.filter() on them. This also then makes that
+        queryset reusable. So the question is, should that queryset have been
+        reusable? It could be invalidated by some other code which we aren't
+        tieing directly into the parent queryset so maybe we can't do the
+        objects.filter() query here and we have to do it internally.
+        """
+        # TODO
+        pass
+        
     def _get_data(self):
         ck = self._get_cache_key()
         if self._result_cache is None or self._cache_clean or self._cache_reset:
@@ -176,7 +213,22 @@ class CachedQuerySet(QuerySet):
                 return
             self._result_cache = cache.get(ck)
             if self._result_cache is None or self._cache_reset:
-                self._result_cache = QuerySet._get_data(self)
+                # We're not going to be able to do QuerySet._get_data
+                # as we need to remove JOINs (yay sharding!)
+                
+                # We need to lookup the initial table queryset, without related
+                # fields selected. We then need to loop through each field which
+                # should be selected and doing another CachedQuerySet() call for
+                # each set of data.
+                
+                # This will allow it to transparently, and recursively, handle
+                # all calls to the cache.
+                
+                # We will use _prepare_queryset_for_cache to store it in the
+                # the cache, and _get_queryset_from_cache to pull it.
+                
+                # Maybe we should override getstate and setstate instead?
+                self._result_cache = self._prepare_queryset_for_cache(QuerySet._get_data(self))
                 self._cache_reset = False
                 cache.set(ck, self._result_cache, self.cache_timeout*60)
         return self._result_cache
@@ -189,7 +241,10 @@ class CachedQuerySet(QuerySet):
         return self
 
     def get(self, *args, **kwargs):
-        "Performs the SELECT and returns a single object matching the given keyword arguments."
+        """
+        Performs the SELECT and returns a single object matching the given
+        keyword arguments.
+        """
         if self._cache_clean:
             clone = self.filter(*args, **kwargs)
             if not clone._order_by:
@@ -200,7 +255,7 @@ class CachedQuerySet(QuerySet):
 
     def clean(self):
         """
-        Removes queryset from the cache -- recommended to use <CacheManager instance>.clean()
+        Removes queryset from the cache upon execution.
         """
         return self._clone(_cache_clean=True)
 
@@ -216,8 +271,10 @@ class CachedQuerySet(QuerySet):
         """
         Overrides CacheManager's options for this QuerySet.
 
-        (Optional) <string key_prefix> -- the key prefix for all cached objects on this model. [default: db_table]
-        (Optional) <int timeout> -- in seconds, the maximum time before data is invalidated.
+        (Optional) <string key_prefix> -- the key prefix for all cached objects
+        on this model. [default: db_table]
+        (Optional) <int timeout> -- in seconds, the maximum time before data is
+        invalidated.
         """
         return self._clone(cache_key_prefix=kwargs.pop('key_prefix', self.cache_key_prefix), cache_timeout=kwargs.pop('timeout', self.cache_timeout))
 
