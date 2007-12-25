@@ -1,126 +1,6 @@
-from django.db import models, backend, connection
-from django.db.models.base import ModelBase
 from django.db.models.query import QuerySet, GET_ITERATOR_CHUNK_SIZE
-from django.core.cache import cache
-
-DEFAULT_CACHE_TIME = 60*60*60 # the maximum an item should be in the cache
-
-# django.db.models.manager
-# dispatcher.connect(ensure_default_manager, signal=signals.class_prepared)
-# ^-- this is annoying
-
-class CachedModelBase(ModelBase):
-    def __new__(cls, name, bases, attrs):
-        # If this isn't a subclass of CachedModel, don't do anything special.
-        try:
-            if not filter(lambda b: issubclass(b, CachedModel), bases):
-                return super(CachedModelBase, cls).__new__(cls, name, bases, attrs)
-        except NameError:
-            # 'CachedModel' isn't defined yet, meaning we're looking at Django's own
-            # Model class, defined below.
-            return super(CachedModelBase, cls).__new__(cls, name, bases, attrs)
-
-        # Create the class.
-        new_class = type.__new__(cls, name, bases, {'__module__': attrs.pop('__module__')})
-        new_class.add_to_class('_meta', Options(attrs.pop('Meta', None)))
-        new_class.add_to_class('DoesNotExist', types.ClassType('DoesNotExist', (ObjectDoesNotExist,), {}))
-
-        # Build complete list of parents
-        for base in bases:
-            # TODO: Checking for the presence of '_meta' is hackish.
-            if '_meta' in dir(base):
-                new_class._meta.parents.append(base)
-                new_class._meta.parents.extend(base._meta.parents)
-
-
-        if getattr(new_class._meta, 'app_label', None) is None:
-            # Figure out the app_label by looking one level up.
-            # For 'django.contrib.sites.models', this would be 'sites'.
-            model_module = sys.modules[new_class.__module__]
-            new_class._meta.app_label = model_module.__name__.split('.')[-2]
-
-        # Bail out early if we have already created this class.
-        m = get_model(new_class._meta.app_label, name, False)
-        if m is not None:
-            return m
-
-        # Add all attributes to the class.
-        for obj_name, obj in attrs.items():
-            new_class.add_to_class(obj_name, obj)
-
-        # Add Fields inherited from parents
-        for parent in new_class._meta.parents:
-            for field in parent._meta.fields:
-                # Only add parent fields if they aren't defined for this class.
-                try:
-                    new_class._meta.get_field(field.name)
-                except FieldDoesNotExist:
-                    field.contribute_to_class(new_class, field.name)
-
-        new_class._prepare()
-
-        # now we register the class with the signals it can have turned on;
-        signals.pre_init.register_sender(new_class)
-        signals.post_init.register_sender(new_class)
-        signals.pre_save.register_sender(new_class)
-        signals.post_save.register_sender(new_class)
-
-        register_models(new_class._meta.app_label, new_class)
-        # Because of the way imports happen (recursively), we may or may not be
-        # the first class for this model to register with the framework. There
-        # should only be one class for each model, so we must always return the
-        # registered version.
-        return get_model(new_class._meta.app_label, name, False)
-
-class CachedModel(models.Model):
-    """
-    docstring for CachedModel
-    """
-    __metaclass__ = CachedModelBase
-
-    objects = CacheManager()
-    nocache = models.Manager()
-    
-    @staticmethod
-    def _get_cache_key_for_pk(model, pk):
-        return '%s:%s' % (model._meta.db_table, pk)
-    
-    def save(self, *args, **kwargs):
-        cache.set(self._get_cache_key_for_pk(self.__class__, self.pk), self)
-        super(CachedModel, self).save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs):
-        # TODO: create an option that tells the model whether or not it should
-        # do a cache.delete when the object is deleted. For memcached we
-        # wouldn't care about deleting.
-        cache.delete(self._get_cache_key_for_pk(self.__class__, self.pk))
-        super(CachedModel, self).delete(*args, **kwargs)
-
-class CacheManager(models.Manager):
-    """
-    A manager to store and retrieve cached objects using CACHE_BACKEND
-
-    <string key_prefix> -- the key prefix for all cached objects on this model. [default: db_table]
-    <int timeout> -- in seconds, the maximum time before data is invalidated. [default: DEFAULT_CACHE_TIME]
-    """
-    def __init__(self, *args, **kwargs):
-        self.key_prefix = kwargs.pop('key_prefix', None)
-        self.timeout = kwargs.pop('timeout', None)
-        super(CacheManager, self).__init__(*args, **kwargs)
-
-    def get_query_set(self):
-        return CachedQuerySet(model=self.model, timeout=self.timeout, key_prefix=self.key_prefix)
-
-    def cache(self, *args, **kwargs):
-        return self.get_query_set().cache(*args, **kwargs)
-
-    def clean(self, *args, **kwargs):
-        return self.get_query_set().clean(*args, **kwargs)
-
-    def reset(self, *args, **kwargs):
-        return self.get_query_set().reset(*args, **kwargs)
-
-
+from django.db import backend, connection
+from exceptions import CacheMissingWarning
 # TODO: if the query is passing pks then we need to make it pull the cache key from the model
 # and try to fetch that first
 # if there are additional filters to apply beyond pks we then filter those after we're already pulling the pks
@@ -129,6 +9,13 @@ class CacheManager(models.Manager):
 
 # TODO: all related field calls need to be removed and replaced with cache key sets of some sorts
 # (just remove the join and make it do another qs.filter(pk__in) to pull them, which would do a many cache get callb)
+
+class FauxCachedQuerySet(list):
+    """
+    We generate a FauxCachedQuerySet when we are returning a
+    CachedQuerySet from a CachedModel.
+    """
+    pass
 
 class CachedQuerySet(QuerySet):
     """
@@ -175,7 +62,7 @@ class CachedQuerySet(QuerySet):
         to (ModelClass, (*<pks>,), (*<select_related fields>,), <n keys>).
         """
         # TODO: make this handle non-explicit field recursion
-        # which btw should be removed from django, because .select_related()
+        # which shouldnt even exist removed from django, because .select_related()
         # is the worst thing you can possibly do.. kind of like import *
         
         # TODO: make this split up large sets of data based on an option
@@ -202,17 +89,42 @@ class CachedQuerySet(QuerySet):
         tieing directly into the parent queryset so maybe we can't do the
         objects.filter() query here and we have to do it internally.
         """
-        # TODO
-        pass
+        # TODO: make this work for people who have, and who don't have, instance caching
+      
+        model, keys, fields, length = cache_object
         
+        # First we fetch any keys that we can from the cache
+        results = cache.get_multi([CachedModel._get_cache_key_for_pk(model, k) for k in keys])
+        
+        # Now we need to compute which keys weren't present in the cache
+        result_pks = [k.pk for k in results]
+        missing = [k for k in keys if k not in result_pks]
+        
+        # Query for any missing objects
+        # TODO: should this only be doing the cache.set if it's from a CachedModel?
+        # if not then we need to expire it, hook signals?
+        objects = model._default_manager.objects.filter(pk__in=missing)
+        for o in objects:
+            cache.set(o.cache_key, o)
+
+        # Do a simple len() lookup (maybe we shouldn't rely on it returning the right
+        # number of objects
+        cnt = len(missing) - len(objects)
+        if cnt:
+            raise CacheMissingWarning("%d objects missing in the database" % (cnt,))
+        return objects
+
     def _get_data(self):
         ck = self._get_cache_key()
         if self._result_cache is None or self._cache_clean or self._cache_reset:
             if self._cache_clean:
                 cache.delete(ck)
                 return
-            self._result_cache = cache.get(ck)
-            if self._result_cache is None or self._cache_reset:
+            if self._cache_reset:
+                result_cache = None
+            else:
+                result_cache = cache.get(ck)
+            if result_cache is None:
                 # We're not going to be able to do QuerySet._get_data
                 # as we need to remove JOINs (yay sharding!)
                 
@@ -231,7 +143,9 @@ class CachedQuerySet(QuerySet):
                 self._result_cache = self._prepare_queryset_for_cache(QuerySet._get_data(self))
                 self._cache_reset = False
                 cache.set(ck, self._result_cache, self.cache_timeout*60)
-        return self._result_cache
+            else:
+                self._result_cache = self._get_queryset_from_cache(result_cache)
+        return FauxCachedQuerySet(self._result_cache)
 
     def execute(self):
         """
