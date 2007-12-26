@@ -125,9 +125,6 @@ class CachedQuerySet(QuerySet):
             else:
                 result_cache = cache.get(ck)
             if result_cache is None:
-                # We're not going to be able to do QuerySet._get_data
-                # as we need to remove JOINs (yay sharding!)
-                
                 # We need to lookup the initial table queryset, without related
                 # fields selected. We then need to loop through each field which
                 # should be selected and doing another CachedQuerySet() call for
@@ -140,11 +137,27 @@ class CachedQuerySet(QuerySet):
                 # the cache, and _get_queryset_from_cache to pull it.
                 
                 # Maybe we should override getstate and setstate instead?
-                self._result_cache = self._prepare_queryset_for_cache(QuerySet._get_data(self))
+
+                # We first have to remove select_related values from the QuerySet
+                # as we don't want to pull these in to the dataset as they may already exist
+                # in memory.
+
+                # TODO: create a function that works w/ our patch and Django trunk which will
+                # grab the select_related fields for us given X model and (Y list or N depth).
+
+                # TODO: find a clean way to say "is this only matching pks?" if it is we wont
+                # need to store a result set in memory but we'll need to apply the filters by hand.
+                qs = QuerySet._clone(self, _select_related=False, _max_related_depth=None)
+                self._result_cache = self._prepare_queryset_for_cache(qs._get_data())
                 self._cache_reset = False
                 cache.set(ck, self._result_cache, self.cache_timeout*60)
             else:
-                self._result_cache = self._get_queryset_from_cache(result_cache)
+                try:
+                    self._result_cache = self._get_queryset_from_cache(result_cache)
+                except CacheMissingWarning:
+                    # When an object is missing we reset the cached list.
+                    # TODO: this should be some kind of option at a global and model level.
+                    return self.reset()._get_data()
         return FauxCachedQuerySet(self._result_cache)
 
     def execute(self):
