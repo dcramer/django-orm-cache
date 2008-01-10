@@ -61,18 +61,19 @@ class CachedQuerySet(QuerySet):
         is in the cache. If it isn't, we need to do the query and set the cache
         to (ModelClass, (*<pks>,), (*<select_related fields>,), <n keys>).
         """
-        # TODO: make this handle non-explicit field recursion
-        # which shouldnt even exist removed from django, because .select_related()
-        # is the worst thing you can possibly do.. kind of like import *
-        
         # TODO: make this split up large sets of data based on an option
         # and sets the last param, keys, to how many datasets are stored
         # in the cache to regenerate.
         keys = tuple(obj.pk for obj in queryset)
-        fields = ()
-        if self._recurse_fields is not None:
-            if self._recurse_fields:
-                fields = self._recurse_fields
+        if self._select_related:
+            if not self._max_related_depth:
+                fields = [f.name for f in opts.fields if f.rel and not f.null]
+            else:
+                # TODO: handle depth relate lookups
+                fields = ()
+        else:
+            fields = ()
+    
         return (queryset.model, keys, fields, 1)
 
     def _get_queryset_from_cache(self, cache_object):
@@ -93,6 +94,17 @@ class CachedQuerySet(QuerySet):
       
         model, keys, fields, length = cache_object
         
+        results = self._get_object_for_keys(model, keys)
+        
+        if fields:
+            for f in fields:
+                field = model._meta.get_field(f)
+                field_results = dict((r.id, r) for r in  self._get_object_for_keys(f.rel.to, [getattr(r, field.db_column) for r in results]))
+                for r in results:
+                    setattr(r, f.name, field_results[getattr(r, field.db_column)])
+        return objects
+
+    def _get_objects_for_keys(self, model, keys):
         # First we fetch any keys that we can from the cache
         results = cache.get_multi([CachedModel._get_cache_key_for_pk(model, k) for k in keys])
         
@@ -112,7 +124,7 @@ class CachedQuerySet(QuerySet):
         cnt = len(missing) - len(objects)
         if cnt:
             raise CacheMissingWarning("%d objects missing in the database" % (cnt,))
-        return objects
+        return results        
 
     def _get_data(self):
         ck = self._get_cache_key()
