@@ -1,11 +1,31 @@
-from django.db.models.base import ModelBase
+from django.db.models.manager import Manager
+from django.db.models.base import ModelBase, Model
+from django.core import validators
+from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
+from django.db.models.fields import AutoField, ImageField, FieldDoesNotExist
+from django.db.models.fields.related import OneToOneRel, ManyToOneRel
+from django.db.models.query import delete_objects
+from django.db.models.options import Options, AdminOptions
+from django.db import connection, transaction
+from django.db.models import signals
+from django.db.models.loading import register_models, get_model
+from django.dispatch import dispatcher
+from django.utils.datastructures import SortedDict
+from django.utils.functional import curry
+from django.utils.encoding import smart_str, force_unicode, smart_unicode
+from django.conf import settings
+from itertools import izip
+import types
+import sys
+import os
+
+from django.db import models
 from django.core.cache import cache
 
-DEFAULT_CACHE_TIME = 60*60*60 # the maximum an item should be in the cache
+from manager import CacheManager
+from utils import get_cache_key_for_pk
 
-# django.db.models.manager
-# dispatcher.connect(ensure_default_manager, signal=signals.class_prepared)
-# ^-- this is annoying
+DEFAULT_CACHE_TIME = 60*60*60 # the maximum an item should be in the cache
 
 class CachedModelBase(ModelBase):
     def __new__(cls, name, bases, attrs):
@@ -22,6 +42,8 @@ class CachedModelBase(ModelBase):
         new_class = type.__new__(cls, name, bases, {'__module__': attrs.pop('__module__')})
         new_class.add_to_class('_meta', Options(attrs.pop('Meta', None)))
         new_class.add_to_class('DoesNotExist', types.ClassType('DoesNotExist', (ObjectDoesNotExist,), {}))
+        new_class.add_to_class('MultipleObjectsReturned',
+            types.ClassType('MultipleObjectsReturned', (MultipleObjectsReturned, ), {}))
 
         # Build complete list of parents
         for base in bases:
@@ -57,12 +79,6 @@ class CachedModelBase(ModelBase):
 
         new_class._prepare()
 
-        # now we register the class with the signals it can have turned on;
-        signals.pre_init.register_sender(new_class)
-        signals.post_init.register_sender(new_class)
-        signals.pre_save.register_sender(new_class)
-        signals.post_save.register_sender(new_class)
-
         register_models(new_class._meta.app_label, new_class)
         # Because of the way imports happen (recursively), we may or may not be
         # the first class for this model to register with the framework. There
@@ -70,18 +86,44 @@ class CachedModelBase(ModelBase):
         # registered version.
         return get_model(new_class._meta.app_label, name, False)
 
-class CachedModel(models.Model):
+class CachedModel(Model):
     """
     docstring for CachedModel
     """
     __metaclass__ = CachedModelBase
 
-    objects = CacheManager()
-    nocache = models.Manager()
+#    objects = CacheManager()
+#    nocache = Manager()
+    
+    # Maybe this would work?
+    @classmethod
+    def _prepare(cls):
+        # How do we extend the parent classes classmethod properly?
+        # super(CachedModel, cls)._prepare() errors
+        opts = cls._meta
+        opts._prepare(cls)
+
+        if opts.order_with_respect_to:
+            cls.get_next_in_order = curry(cls._get_next_or_previous_in_order, is_next=True)
+            cls.get_previous_in_order = curry(cls._get_next_or_previous_in_order, is_next=False)
+            setattr(opts.order_with_respect_to.rel.to, 'get_%s_order' % cls.__name__.lower(), curry(method_get_order, cls))
+            setattr(opts.order_with_respect_to.rel.to, 'set_%s_order' % cls.__name__.lower(), curry(method_set_order, cls))
+
+        # Give the class a docstring -- its definition.
+        if cls.__doc__ is None:
+            cls.__doc__ = "%s(%s)" % (cls.__name__, ", ".join([f.attname for f in opts.fields]))
+
+        if hasattr(cls, 'get_absolute_url'):
+            cls.get_absolute_url = curry(get_absolute_url, opts, cls.get_absolute_url)
+
+        cls.add_to_class('objects', CacheManager())
+        cls.add_to_class('nocache', Manager())
+        cls.add_to_class('_default_manager', cls.nocache)
+        dispatcher.send(signal=signals.class_prepared, sender=cls)
     
     @staticmethod
     def _get_cache_key_for_pk(model, pk):
-        return '%s:%s' % (model._meta.db_table, pk)
+        return get_cache_key_for_pk(model, pk)
     
     @property
     def cache_key(self):

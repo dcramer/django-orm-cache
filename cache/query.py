@@ -1,6 +1,11 @@
 from django.db.models.query import QuerySet, GET_ITERATOR_CHUNK_SIZE
 from django.db import backend, connection
+from django.core.cache import cache
+from django.conf import settings
+
+from utils import get_cache_key_for_pk
 from exceptions import CacheMissingWarning
+
 # TODO: if the query is passing pks then we need to make it pull the cache key from the model
 # and try to fetch that first
 # if there are additional filters to apply beyond pks we then filter those after we're already pulling the pks
@@ -9,6 +14,8 @@ from exceptions import CacheMissingWarning
 
 # TODO: all related field calls need to be removed and replaced with cache key sets of some sorts
 # (just remove the join and make it do another qs.filter(pk__in) to pull them, which would do a many cache get callb)
+
+DEFAULT_CACHE_TIME = 60*60*24 # 24 hours
 
 class FauxCachedQuerySet(list):
     """
@@ -35,7 +42,7 @@ class CachedQuerySet(QuerySet):
         if timeout:
             self.cache_timeout = timeout
         else:
-            self.cache_timeout = getattr(cache, 'default_timeout', DEFAULT_CACHE_TIME)
+            self.cache_timeout = getattr(cache, 'default_timeout', getattr(settings, 'DEFAULT_CACHE_TIME', DEFAULT_CACHE_TIME))
         QuerySet.__init__(self, model, *args, **kwargs)
 
     def _clone(self, klass=None, **kwargs):
@@ -74,7 +81,7 @@ class CachedQuerySet(QuerySet):
         else:
             fields = ()
     
-        return (queryset.model, keys, fields, 1)
+        return (queryset[0].__class__, keys, fields, 1)
 
     def _get_queryset_from_cache(self, cache_object):
         """
@@ -91,31 +98,29 @@ class CachedQuerySet(QuerySet):
         objects.filter() query here and we have to do it internally.
         """
         # TODO: make this work for people who have, and who don't have, instance caching
-      
         model, keys, fields, length = cache_object
         
-        results = self._get_object_for_keys(model, keys)
+        results = self._get_objects_for_keys(model, keys)
         
         if fields:
             for f in fields:
                 field = model._meta.get_field(f)
-                field_results = dict((r.id, r) for r in  self._get_object_for_keys(f.rel.to, [getattr(r, field.db_column) for r in results]))
+                field_results = dict((r.id, r) for r in  self._get_objects_for_keys(f.rel.to, [getattr(r, field.db_column) for r in results]))
                 for r in results:
                     setattr(r, f.name, field_results[getattr(r, field.db_column)])
-        return objects
+        return results
 
     def _get_objects_for_keys(self, model, keys):
         # First we fetch any keys that we can from the cache
-        results = cache.get_multi([CachedModel._get_cache_key_for_pk(model, k) for k in keys])
+        results = cache.get_many([get_cache_key_for_pk(model, k) for k in keys]).values()
         
         # Now we need to compute which keys weren't present in the cache
         result_pks = [k.pk for k in results]
         missing = [k for k in keys if k not in result_pks]
-        
         # Query for any missing objects
         # TODO: should this only be doing the cache.set if it's from a CachedModel?
         # if not then we need to expire it, hook signals?
-        objects = model._default_manager.objects.filter(pk__in=missing)
+        objects = model._default_manager.filter(pk__in=missing)
         for o in objects:
             cache.set(o.cache_key, o)
 
@@ -159,10 +164,10 @@ class CachedQuerySet(QuerySet):
 
                 # TODO: find a clean way to say "is this only matching pks?" if it is we wont
                 # need to store a result set in memory but we'll need to apply the filters by hand.
-                qs = QuerySet._clone(self, _select_related=False, _max_related_depth=None)
-                self._result_cache = self._prepare_queryset_for_cache(qs._get_data())
+                qs = QuerySet._clone(QuerySet(), **self.__dict__)
+                self._result_cache = qs._get_data()
                 self._cache_reset = False
-                cache.set(ck, self._result_cache, self.cache_timeout*60)
+                cache.set(ck, self._prepare_queryset_for_cache(self._result_cache), self.cache_timeout*60)
             else:
                 try:
                     self._result_cache = self._get_queryset_from_cache(result_cache)
