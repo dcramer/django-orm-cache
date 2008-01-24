@@ -39,6 +39,10 @@ DEFAULT_CACHE_TIME = 60*60*60 # the maximum an item should be in the cache
 # which would invalidate anything that had a create expiration set because the key is
 # now invalid, because the namespace changed.
 
+# if you only had create expirations set
+# your namespace would be :0: -- its all about the queryset call, you still have to
+# call it the same way throughout your code
+
 # We can also add a table namespace, which says "delete everything" so our
 # cache key now becomes db_table:ns_count:0,0,0:hash
 # where the 0,0,0: is optional
