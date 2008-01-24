@@ -103,6 +103,8 @@ class CachedQuerySet(QuerySet):
         results = self._get_objects_for_keys(model, keys)
         
         if fields:
+            # TODO: optimize this so it's only one get_many call instead of one per select_related field
+            # XXX: this probably isn't handling depth beyond 1, didn't test even depth of 1 yet
             for f in fields:
                 field = model._meta.get_field(f)
                 field_results = dict((r.id, r) for r in  self._get_objects_for_keys(f.rel.to, [getattr(r, field.db_column) for r in results]))
