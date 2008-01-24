@@ -1,26 +1,18 @@
 from django.db.models.manager import Manager
 from django.db.models.base import ModelBase, Model
-from django.core import validators
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
-from django.db.models.fields import AutoField, ImageField, FieldDoesNotExist
-from django.db.models.fields.related import OneToOneRel, ManyToOneRel
-from django.db.models.query import delete_objects
-from django.db.models.options import Options, AdminOptions
-from django.db import connection, transaction
+from django.db.models.fields import FieldDoesNotExist
+from django.db.models.options import Options
 from django.db.models import signals
 from django.db.models.loading import register_models, get_model
 from django.dispatch import dispatcher
-from django.utils.datastructures import SortedDict
 from django.utils.functional import curry
-from django.utils.encoding import smart_str, force_unicode, smart_unicode
 from django.conf import settings
-from itertools import izip
+
+from django.core.cache import cache
+
 import types
 import sys
-import os
-
-from django.db import models
-from django.core.cache import cache
 
 from manager import CacheManager
 from utils import get_cache_key_for_pk
