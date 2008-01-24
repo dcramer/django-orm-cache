@@ -28,7 +28,7 @@ class CachedQuerySet(QuerySet):
     """
     Extends the QuerySet object and caches results via CACHE_BACKEND.
     """
-    def __init__(self, model=None, key_prefix=None, timeout=None, *args, **kwargs):
+    def __init__(self, model=None, key_prefix=None, timeout=None, key_name=None, *args, **kwargs):
         self._cache_keys = {}
         self._cache_reset = False
         self._cache_clean = False
@@ -39,6 +39,7 @@ class CachedQuerySet(QuerySet):
                 self.cache_key_prefix = model._meta.db_table
             else:
                 self.cache_key_prefix = ''
+        self.cache_key_name = key_name
         if timeout:
             self.cache_timeout = timeout
         else:
@@ -55,6 +56,8 @@ class CachedQuerySet(QuerySet):
         return c
 
     def _get_sorted_clause_key(self):
+        if self.cache_key_name is not None:
+            return self.cache_key_name
         return (isinstance(i, basestring) and i.lower().replace('`', '').replace("'", '') or str(tuple(sorted(i))) for i in self._get_sql_clause())
 
     def _get_cache_key(self, extra=''):
@@ -218,12 +221,15 @@ class CachedQuerySet(QuerySet):
         """
         Overrides CacheManager's options for this QuerySet.
 
-        (Optional) <string key_prefix> -- the key prefix for all cached objects
+        <string key_prefix> -- the key prefix for all cached objects
         on this model. [default: db_table]
-        (Optional) <int timeout> -- in seconds, the maximum time before data is
+        <int timeout> -- in seconds, the maximum time before data is
         invalidated.
+        <string key_name> -- the key suffix for this cached queryset
+        useful if you want to cache the same queryset with two expiration
+        methods.
         """
-        return self._clone(cache_key_prefix=kwargs.pop('key_prefix', self.cache_key_prefix), cache_timeout=kwargs.pop('timeout', self.cache_timeout))
+        return self._clone(cache_key_prefix=kwargs.pop('key_prefix', self.cache_key_prefix), cache_timeout=kwargs.pop('timeout', self.cache_timeout), cache_key_name=kwargs.pop('key_name', self.cache_key_name))
 
     def reset(self):
         """

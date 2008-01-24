@@ -20,6 +20,8 @@ class CacheManager(Manager):
         return self.get_query_set().cache(*args, **kwargs)
 
     def clean(self, *args, **kwargs):
+        # Use reset instead if you are using memcached, as clean makes no sense (extra bandwidth when
+        # memcached will automatically clean iself).
         return self.get_query_set().clean(*args, **kwargs)
 
     def reset(self, *args, **kwargs):
