@@ -56,13 +56,18 @@ class CachedQuerySet(QuerySet):
         return c
 
     def _get_sorted_clause_key(self):
-        if self.cache_key_name is not None:
-            return self.cache_key_name
         return (isinstance(i, basestring) and i.lower().replace('`', '').replace("'", '') or str(tuple(sorted(i))) for i in self._get_sql_clause())
 
     def _get_cache_key(self, extra=''):
+        # TODO: Need to figure out if this is the best use.
+        # Maybe we should use extra for cache_key_name, extra was planned for use
+        # in things like .count() as it's a different cache key than the normal queryset,
+        # but that also doesn't make sense because theoretically count() is already different
+        # sql so the sorted_sql_clause should have figured that out.
+        if self.cache_key_name is not None:
+            return '%s:%s' % (self.cache_key_prefix, self.cache_key_name)
         if extra not in self._cache_keys:
-            self._cache_keys[extra] = '%s%s%s' % (self.cache_key_prefix, str(hash(''.join(self._get_sorted_clause_key()))), extra)
+            self._cache_keys[extra] = '%s:%s:%s' % (self.cache_key_prefix, str(hash(''.join(self._get_sorted_clause_key()))), extra)
         return self._cache_keys[extra]
 
     def _prepare_queryset_for_cache(self, queryset):

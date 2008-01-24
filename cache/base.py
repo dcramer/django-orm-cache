@@ -19,7 +19,36 @@ from utils import get_cache_key_for_pk
 
 DEFAULT_CACHE_TIME = 60*60*60 # the maximum an item should be in the cache
 
+# Signals rundown:
+# .cache(expire_on=['create', 'update', 'delete'])
+# use namespaces possible so the cache key becomes key_name:expire_namespace(not always present):hash
+
+# for example, a call with no expires:
+# db_table:hash
+
+# a call with a delete expires
+# db_table:0,0,0:hash
+
+# the numbers represent our current namespace level for the 3 expiration methods
+# in order to do this, we'd have to actually store another cache key per model
+# and to support threading, query that cache key everytime we do any cache queryset
+# hit
+# e.g. cache.get('ns:db_table') = 0,0,0
+
+# when a new row is created, we'd set that to 1,0,0
+# which would invalidate anything that had a create expiration set because the key is
+# now invalid, because the namespace changed.
+
+# We can also add a table namespace, which says "delete everything" so our
+# cache key now becomes db_table:ns_count:0,0,0:hash
+# where the 0,0,0: is optional
+
+# ns_count would be stored in the same ns:db_table key and starts at 0
+# this would most likely only be incremented if you did a push to your site
+# and needed to say wipe all articles because the dataset changed.
+
 class CachedModelBase(ModelBase):
+    # TODO: find a way to not overwrite __new__ like this
     def __new__(cls, name, bases, attrs):
         # If this isn't a subclass of CachedModel, don't do anything special.
         try:
@@ -90,7 +119,7 @@ class CachedModel(Model):
     # Maybe this would work?
     @classmethod
     def _prepare(cls):
-        # How do we extend the parent classes classmethod properly?
+        # TODO: How do we extend the parent classes classmethod properly?
         # super(CachedModel, cls)._prepare() errors
         opts = cls._meta
         opts._prepare(cls)
