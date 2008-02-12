@@ -122,11 +122,13 @@ class CachedQuerySet(QuerySet):
 
     def _get_objects_for_keys(self, model, keys):
         # First we fetch any keys that we can from the cache
-        results = list(cache.get_many([get_cache_key_for_pk(model, k) for k in keys]).values())
+        results = cache.get_many([get_cache_key_for_pk(model, k) for k in keys]).values()
         
         # Now we need to compute which keys weren't present in the cache
-        result_pks = [k.pk for k in results]
-        missing = [k for k in keys if k not in result_pks]
+        missing = [k for k in results.iterkeys() if not results[k]]
+
+        # We no longer need to know what the keys were so turn it into a list
+        results = list(results)
         # Query for any missing objects
         # TODO: should this only be doing the cache.set if it's from a CachedModel?
         # if not then we need to expire it, hook signals?
