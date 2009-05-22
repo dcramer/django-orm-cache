@@ -95,7 +95,7 @@ class CachedQuerySet(QuerySet):
         """
         We transform the cache storage into an actual QuerySet object
         automagickly handling the keys depth and select_related fields (again,
-        using the recursive methods of CachedQuerySet.
+        using the recursive methods of CachedQuerySet).
         
         We effectively would just be doing a cache.multi_get(*pks), grabbing
         the pks for each releation, e.g. user, and then doing a
