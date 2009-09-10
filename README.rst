@@ -40,6 +40,12 @@ The row-level cache is primarily managed by the ``CachedModel`` class. This clas
 * objects -- a CacheManager instance.
 * nocache -- the default manager instance.
 
+Usage::
+
+	from ormcache.models import CachedModel
+	class Article(CachedModel):
+	    ...
+
 QuerySet Caches
 ---------------
 
