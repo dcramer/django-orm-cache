@@ -1,4 +1,4 @@
-from django.db.models.query import QuerySet, GET_ITERATOR_CHUNK_SIZE
+from django.db.models.query import QuerySet, ITER_CHUNK_SIZE
 from django.db import backend, connection
 from django.core.cache import cache
 from django.conf import settings

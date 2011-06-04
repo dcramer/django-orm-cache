@@ -144,7 +144,7 @@ class CachedModel(Model):
         cls.add_to_class('objects', CacheManager())
         cls.add_to_class('nocache', Manager())
         cls.add_to_class('_default_manager', cls.nocache)
-        dispatcher.send(signal=signals.class_prepared, sender=cls)
+        signals.class_prepared.send(sender=cls)
     
     @staticmethod
     def _get_cache_key_for_pk(model, pk):
