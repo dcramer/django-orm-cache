@@ -1,3 +1,6 @@
 *.pyc
+*.pyo
+*.DS_Store
+*.swp
 /build
 /dist
